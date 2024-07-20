@@ -311,6 +311,7 @@ class Lr1Test(unittest.TestCase):
                      str(lr1.Conflict(12, "'A'", ["R", "S"])))
     self.assertEqual("Conflict for 'A' in state 12: R vs S vs T",
                      str(lr1.Conflict(12, "'A'", ["R", "S", "T"])))
+    # oops now it works
 
 
 if __name__ == "__main__":
