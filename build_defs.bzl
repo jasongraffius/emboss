@@ -25,6 +25,8 @@ There is also a convenience macro, `emboss_cc_library()`, which creates an
 """
 
 load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 
 def emboss_cc_library(name, srcs, deps = [], import_dirs = [], enable_enum_traits = True, **kwargs):
     """Constructs a C++ library from an .emb file."""
