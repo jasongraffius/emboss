@@ -137,6 +137,7 @@ emboss_cc_util_test(
     copts = ["-DEMBOSS_FORCE_ALL_CHECKS"],
     deps = [
         "//runtime/cpp:cpp_utils",
+        "//runtime/cpp/test/util:noncontiguous_container",
         "@com_google_googletest//:gtest_main",
     ],
 )
