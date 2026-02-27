@@ -25,6 +25,7 @@
 #include "gtest/gtest.h"
 #include "runtime/cpp/emboss_memory_util.h"
 #include "runtime/cpp/emboss_prelude.h"
+#include "runtime/cpp/test/util/noncontiguous_container.h"
 
 namespace emboss {
 namespace support {
@@ -148,6 +149,103 @@ TEST(MemoryAccessor, LittleEndianReads) {
   TestMemoryAccessor<std::byte, 8, 0, 64>();
 #endif
   TestMemoryAccessor<unsigned char, 8, 0, 64>();
+}
+
+template <typename CharT, ::std::size_t kBits>
+void TestIteratorUnalignedAccessor() {
+  using ByteT = typename std::remove_const<CharT>::type;
+
+  // Test all 2^7 = 128 possible ways to partition an 8 byte buffer into chunks.
+  // A 1 bit in `partition_mask` at bit `i` means a chunk boundary exists
+  // between byte `i` and `i + 1`.
+  for (uint8_t partition_mask = 0; partition_mask < 128; ++partition_mask) {
+    std::vector<std::vector<ByteT>> chunks;
+    std::vector<ByteT> current_chunk;
+
+    for (uint8_t i = 0; i < 8; ++i) {
+      current_chunk.push_back(ByteT(i + 1));
+      if ((partition_mask & (1 << i)) || i == 7) {
+        chunks.push_back(std::move(current_chunk));
+        current_chunk.clear();
+      }
+    }
+
+    NoncontiguousContainer<ByteT> container(chunks);
+    EXPECT_EQ(container.size(), 8U);
+
+    EXPECT_EQ(0x0807060504030201UL & (~0x0UL >> (64 - kBits)),
+              (UnalignedAccessor<CharT, kBits>::ReadLittleEndianUInt(
+                  container.begin())))
+        << "Read LE Failed. Mask = " << static_cast<int>(partition_mask)
+        << "; kBits = " << kBits;
+
+    EXPECT_EQ(
+        0x0102030405060708UL >> (64 - kBits),
+        (UnalignedAccessor<CharT, kBits>::ReadBigEndianUInt(container.begin())))
+        << "Read BE Failed. Mask = " << static_cast<int>(partition_mask)
+        << "; kBits = " << kBits;
+
+    auto write_container_le = container;
+    UnalignedAccessor<CharT, kBits>::WriteLittleEndianUInt(
+        write_container_le.begin(),
+        0x7172737475767778UL & (~0x0UL >> (64 - kBits)));
+
+    auto expected_vector_after_write_le = init_container<std::vector<ByteT>>(
+        0x78, 0x77, 0x76, 0x75, 0x74, 0x73, 0x72, 0x71);
+    for (typename std::vector<ByteT>::size_type i = kBits / 8; i < 8; ++i) {
+      expected_vector_after_write_le[i] = ByteT(i + 1);
+    }
+
+    std::vector<ByteT> actual_vector_le;
+    for (auto it = write_container_le.begin(); it != write_container_le.end();
+         ++it) {
+      actual_vector_le.push_back(*it);
+    }
+    EXPECT_EQ(expected_vector_after_write_le, actual_vector_le)
+        << "Write LE Failed. Mask = " << static_cast<int>(partition_mask)
+        << "; kBits = " << kBits;
+
+    auto write_container_be = container;
+    UnalignedAccessor<CharT, kBits>::WriteBigEndianUInt(
+        write_container_be.begin(), 0x7172737475767778UL >> (64 - kBits));
+
+    auto expected_vector_after_write_be = init_container<std::vector<ByteT>>(
+        0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78);
+    for (typename std::vector<ByteT>::size_type i = kBits / 8; i < 8; ++i) {
+      expected_vector_after_write_be[i] = ByteT(i + 1);
+    }
+
+    std::vector<ByteT> actual_vector_be;
+    for (auto it = write_container_be.begin(); it != write_container_be.end();
+         ++it) {
+      actual_vector_be.push_back(*it);
+    }
+    EXPECT_EQ(expected_vector_after_write_be, actual_vector_be)
+        << "Write BE Failed. Mask = " << static_cast<int>(partition_mask)
+        << "; kBits = " << kBits;
+  }
+
+  // Recursively iterate the template:
+  TestIteratorUnalignedAccessor<CharT, kBits - 8>();
+}
+
+template <>
+void TestIteratorUnalignedAccessor<char, 0>() {}
+
+#if __cplusplus >= 201703L
+template <>
+void TestIteratorUnalignedAccessor<std::byte, 0>() {}
+#endif
+
+template <>
+void TestIteratorUnalignedAccessor<unsigned char, 0>() {}
+
+TEST(UnalignedAccessor, IteratorReadsAndWrites) {
+  TestIteratorUnalignedAccessor<char, 64>();
+#if __cplusplus >= 201703L
+  TestIteratorUnalignedAccessor<std::byte, 64>();
+#endif
+  TestIteratorUnalignedAccessor<unsigned char, 64>();
 }
 
 TEST(ContiguousBuffer, OffsetStorageType) {

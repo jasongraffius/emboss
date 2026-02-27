@@ -47,31 +47,29 @@ struct MemoryAccessor {
   using ChainedAccessor =
       MemoryAccessor<CharT, kAlignment / 2, kOffset % (kAlignment / 2), kBits>;
   using Unsigned = typename LeastWidthInteger<kBits>::Unsigned;
-  static inline Unsigned ReadLittleEndianUInt(const CharT *bytes) {
+  template <typename Iterator>
+  static inline Unsigned ReadLittleEndianUInt(Iterator bytes) {
     return ChainedAccessor::ReadLittleEndianUInt(bytes);
   }
-  static inline void WriteLittleEndianUInt(CharT *bytes, Unsigned value) {
+  template <typename Iterator>
+  static inline void WriteLittleEndianUInt(Iterator bytes, Unsigned value) {
     ChainedAccessor::WriteLittleEndianUInt(bytes, value);
   }
-  static inline Unsigned ReadBigEndianUInt(const CharT *bytes) {
+  template <typename Iterator>
+  static inline Unsigned ReadBigEndianUInt(Iterator bytes) {
     return ChainedAccessor::ReadBigEndianUInt(bytes);
   }
-  static inline void WriteBigEndianUInt(CharT *bytes, Unsigned value) {
+  template <typename Iterator>
+  static inline void WriteBigEndianUInt(Iterator bytes, Unsigned value) {
     ChainedAccessor::WriteBigEndianUInt(bytes, value);
   }
 };
 
-// The least-aligned case for MemoryAccessor is 8-bit alignment, and the default
-// version of MemoryAccessor will devolve to this one if there is no more
-// specific override.
-//
-// If the system byte order is known, then these routines can use memcpy and
-// (possibly) a byte swap; otherwise they can read individual bytes and
-// shift+or them together in the appropriate order.  I (bolms@) haven't found a
-// compiler that will optimize the multiple reads, shifts, and ors into a single
-// read, so the memcpy version is *much* faster for 32-bit and larger reads.
+// UnalignedAccessor provides generic, iterator-compatible read and write
+// implementations for unaligned data. It uses std::copy_n to safely handle
+// data movement and byte reordering across contiguous or fragmented storage.
 template <typename CharT, ::std::size_t kBits>
-struct MemoryAccessor<CharT, 1, 0, kBits> {
+struct UnalignedAccessor {
   static_assert(kBits % 8 == 0,
                 "MemoryAccessor can only read and write whole-byte values.");
   static_assert(IsAliasSafe<CharT>::value,
@@ -80,32 +78,65 @@ struct MemoryAccessor<CharT, 1, 0, kBits> {
   using Unsigned = typename LeastWidthInteger<kBits>::Unsigned;
 
 #if defined(EMBOSS_LITTLE_ENDIAN_TO_NATIVE)
-  static inline Unsigned ReadLittleEndianUInt(const CharT *bytes) {
+  template <typename Iterator>
+  static inline Unsigned ReadLittleEndianUInt(Iterator bytes) {
+    using DereferenceT = typename ::std::remove_cv<
+        typename ::std::remove_reference<decltype(*bytes)>::type>::type;
+    static_assert(
+        ::std::is_same<DereferenceT,
+                       typename ::std::remove_cv<CharT>::type>::value,
+        "UnalignedAccessor Iterator underlying type must match CharT.");
     Unsigned result = 0;
-    ::std::memcpy(&result, bytes, kBits / 8);
+    auto dest =
+        reinterpret_cast<typename ::std::remove_cv<CharT>::type*>(&result);
+    ::std::copy_n(bytes, kBits / 8, dest);
     return EMBOSS_LITTLE_ENDIAN_TO_NATIVE(result);
   }
 #else
-  static inline Unsigned ReadLittleEndianUInt(const CharT *bytes) {
+  template <typename Iterator>
+  static inline Unsigned ReadLittleEndianUInt(Iterator bytes) {
+    using DereferenceT = typename ::std::remove_cv<
+        typename ::std::remove_reference<decltype(*bytes)>::type>::type;
+    static_assert(
+        ::std::is_same<DereferenceT,
+                       typename ::std::remove_cv<CharT>::type>::value,
+        "UnalignedAccessor Iterator underlying type must match CharT.");
     Unsigned result = 0;
-    for (decltype(kBits) i = 0; i < kBits / 8; ++i) {
-      result |=
-          static_cast<Unsigned>(static_cast</**/ ::std::uint8_t>(bytes[i]))
-          << i * 8;
+    auto it = bytes;
+    for (decltype(kBits) i = 0; i < kBits / 8; ++i, ++it) {
+      result |= static_cast<Unsigned>(static_cast</**/ ::std::uint8_t>(*it))
+                << i * 8;
     }
     return result;
   }
 #endif
 
 #if defined(EMBOSS_NATIVE_TO_LITTLE_ENDIAN)
-  static inline void WriteLittleEndianUInt(CharT *bytes, Unsigned value) {
+  template <typename Iterator>
+  static inline void WriteLittleEndianUInt(Iterator bytes, Unsigned value) {
+    using DereferenceT = typename ::std::remove_cv<
+        typename ::std::remove_reference<decltype(*bytes)>::type>::type;
+    static_assert(
+        ::std::is_same<DereferenceT,
+                       typename ::std::remove_cv<CharT>::type>::value,
+        "UnalignedAccessor Iterator underlying type must match CharT.");
     value = EMBOSS_NATIVE_TO_LITTLE_ENDIAN(value);
-    ::std::memcpy(bytes, &value, kBits / 8);
+    auto src =
+        reinterpret_cast<const typename ::std::remove_cv<CharT>::type*>(&value);
+    ::std::copy_n(src, kBits / 8, bytes);
   }
 #else
-  static inline void WriteLittleEndianUInt(CharT *bytes, Unsigned value) {
-    for (decltype(kBits) i = 0; i < kBits / 8; ++i) {
-      bytes[i] = static_cast<CharT>(static_cast</**/ ::std::uint8_t>(value));
+  template <typename Iterator>
+  static inline void WriteLittleEndianUInt(Iterator bytes, Unsigned value) {
+    using DereferenceT = typename ::std::remove_cv<
+        typename ::std::remove_reference<decltype(*bytes)>::type>::type;
+    static_assert(
+        ::std::is_same<DereferenceT,
+                       typename ::std::remove_cv<CharT>::type>::value,
+        "UnalignedAccessor Iterator underlying type must match CharT.");
+    auto it = bytes;
+    for (decltype(kBits) i = 0; i < kBits / 8; ++i, ++it) {
+      *it = static_cast<DereferenceT>(static_cast</**/ ::std::uint8_t>(value));
       if (sizeof value > 1) {
         // Shifting an 8-bit type by 8 bits is undefined behavior, so skip this
         // step for uint8_t.
@@ -116,7 +147,14 @@ struct MemoryAccessor<CharT, 1, 0, kBits> {
 #endif
 
 #if defined(EMBOSS_BIG_ENDIAN_TO_NATIVE)
-  static inline Unsigned ReadBigEndianUInt(const CharT *bytes) {
+  template <typename Iterator>
+  static inline Unsigned ReadBigEndianUInt(Iterator bytes) {
+    using DereferenceT = typename ::std::remove_cv<
+        typename ::std::remove_reference<decltype(*bytes)>::type>::type;
+    static_assert(
+        ::std::is_same<DereferenceT,
+                       typename ::std::remove_cv<CharT>::type>::value,
+        "UnalignedAccessor Iterator underlying type must match CharT.");
     Unsigned result = 0;
     // When a big-endian source integer is smaller than the result, the source
     // bytes must be copied into the final bytes of the destination.  This is
@@ -160,35 +198,59 @@ struct MemoryAccessor<CharT, 1, 0, kBits> {
     // +--------+--------+--------+--------+
     // | 0x00   | 0x11   | 0x22   | 0x33   |
     // +--------+--------+--------+--------+
-    ::std::memcpy(reinterpret_cast<char *>(&result) + sizeof result - kBits / 8,
-                  bytes, kBits / 8);
+    auto dest =
+        reinterpret_cast<typename ::std::remove_cv<CharT>::type*>(&result) +
+        sizeof(result) - kBits / 8;
+    ::std::copy_n(bytes, kBits / 8, dest);
     result = EMBOSS_BIG_ENDIAN_TO_NATIVE(result);
     return result;
   }
 #else
-  static inline Unsigned ReadBigEndianUInt(const CharT *bytes) {
+  template <typename Iterator>
+  static inline Unsigned ReadBigEndianUInt(Iterator bytes) {
+    using DereferenceT = typename ::std::remove_cv<
+        typename ::std::remove_reference<decltype(*bytes)>::type>::type;
+    static_assert(
+        ::std::is_same<DereferenceT,
+                       typename ::std::remove_cv<CharT>::type>::value,
+        "UnalignedAccessor Iterator underlying type must match CharT.");
     Unsigned result = 0;
-    for (decltype(kBits) i = 0; i < kBits / 8; ++i) {
-      result |=
-          static_cast<Unsigned>(static_cast</**/ ::std::uint8_t>(bytes[i]))
-          << (kBits - 8 - i * 8);
+    auto it = bytes;
+    for (decltype(kBits) i = 0; i < kBits / 8; ++i, ++it) {
+      result |= static_cast<Unsigned>(static_cast</**/ ::std::uint8_t>(*it))
+                << (kBits - 8 - i * 8);
     }
     return result;
   }
 #endif
 
 #if defined(EMBOSS_NATIVE_TO_BIG_ENDIAN)
-  static inline void WriteBigEndianUInt(CharT *bytes, Unsigned value) {
+  template <typename Iterator>
+  static inline void WriteBigEndianUInt(Iterator bytes, Unsigned value) {
+    using DereferenceT = typename ::std::remove_cv<
+        typename ::std::remove_reference<decltype(*bytes)>::type>::type;
+    static_assert(
+        ::std::is_same<DereferenceT,
+                       typename ::std::remove_cv<CharT>::type>::value,
+        "UnalignedAccessor Iterator underlying type must match CharT.");
     value = EMBOSS_NATIVE_TO_BIG_ENDIAN(value);
-    ::std::memcpy(bytes,
-                  reinterpret_cast<char *>(&value) + sizeof value - kBits / 8,
-                  kBits / 8);
+    auto src = reinterpret_cast<const typename ::std::remove_cv<CharT>::type*>(
+                   &value) +
+               sizeof(value) - kBits / 8;
+    ::std::copy_n(src, kBits / 8, bytes);
   }
 #else
-  static inline void WriteBigEndianUInt(CharT *bytes, Unsigned value) {
-    for (decltype(kBits) i = 0; i < kBits / 8; ++i) {
-      bytes[kBits / 8 - 1 - i] =
-          static_cast<CharT>(static_cast</**/ ::std::uint8_t>(value));
+  template <typename Iterator>
+  static inline void WriteBigEndianUInt(Iterator bytes, Unsigned value) {
+    using DereferenceT = typename ::std::remove_cv<
+        typename ::std::remove_reference<decltype(*bytes)>::type>::type;
+    static_assert(
+        ::std::is_same<DereferenceT,
+                       typename ::std::remove_cv<CharT>::type>::value,
+        "UnalignedAccessor Iterator underlying type must match CharT.");
+    auto it = bytes + (kBits / 8 - 1);
+    for (decltype(kBits) i = 0; i < kBits / 8; ++i, --it) {
+      *it = static_cast<DereferenceT>(static_cast</**/ ::std::uint8_t>(value));
       if (sizeof value > 1) {
         // Shifting an 8-bit type by 8 bits is undefined behavior, so skip this
         // step for uint8_t.
@@ -197,6 +259,45 @@ struct MemoryAccessor<CharT, 1, 0, kBits> {
     }
   }
 #endif
+};
+
+// The least-aligned case for MemoryAccessor is 8-bit alignment, and the default
+// version of MemoryAccessor will devolve to this one if there is no more
+// specific override.
+//
+// If the system byte order is known, then these routines can use memcpy and
+// (possibly) a byte swap; otherwise they can read individual bytes and
+// shift+or them together in the appropriate order.  I (bolms@) haven't found a
+// compiler that will optimize the multiple reads, shifts, and ors into a single
+// read, so the memcpy version is *much* faster for 32-bit and larger reads.
+template <typename CharT, ::std::size_t kBits>
+struct MemoryAccessor<CharT, 1, 0, kBits> {
+  static_assert(kBits % 8 == 0,
+                "MemoryAccessor can only read and write whole-byte values.");
+  static_assert(IsAliasSafe<CharT>::value,
+                "MemoryAccessor can only be used on pointers to char types.");
+
+  using Unsigned = typename LeastWidthInteger<kBits>::Unsigned;
+
+  template <typename Iterator>
+  static inline Unsigned ReadLittleEndianUInt(Iterator bytes) {
+    return UnalignedAccessor<CharT, kBits>::ReadLittleEndianUInt(bytes);
+  }
+
+  template <typename Iterator>
+  static inline void WriteLittleEndianUInt(Iterator bytes, Unsigned value) {
+    UnalignedAccessor<CharT, kBits>::WriteLittleEndianUInt(bytes, value);
+  }
+
+  template <typename Iterator>
+  static inline Unsigned ReadBigEndianUInt(Iterator bytes) {
+    return UnalignedAccessor<CharT, kBits>::ReadBigEndianUInt(bytes);
+  }
+
+  template <typename Iterator>
+  static inline void WriteBigEndianUInt(Iterator bytes, Unsigned value) {
+    UnalignedAccessor<CharT, kBits>::WriteBigEndianUInt(bytes, value);
+  }
 };
 
 // Specialization of UIntMemoryAccessor for 16- 32- and 64-bit-aligned reads and
