@@ -804,6 +804,204 @@ class ContiguousBuffer final {
 using ReadWriteContiguousBuffer = ContiguousBuffer<unsigned char, 1, 0>;
 using ReadOnlyContiguousBuffer = ContiguousBuffer<const unsigned char, 1, 0>;
 
+// IteratorStorage is a view similar to ContiguousBuffer, but instead of
+// wrapping a direct pointer it wraps a generic Iterator, making it compatible
+// with logically-contiguous-but-physically-fragmented backing stores.
+//
+// Because iterators do not guarantee or expose alignment constraints,
+// IteratorStorage simply asserts 1-byte alignment internally and delegates
+// unconditionally to UnalignedAccessor for all memory reads and writes.
+template <typename Iterator>
+class IteratorStorage final {
+ public:
+  using ByteType = typename ::std::remove_reference<
+      decltype(*::std::declval<Iterator>())>::type;
+  using CharT = typename ::std::remove_cv<ByteType>::type;
+
+  template <::std::size_t kSubAlignment = 1, ::std::size_t kSubOffset = 0>
+  using OffsetStorageType = IteratorStorage<Iterator>;
+
+  static_assert(IsAliasSafe<CharT>::value,
+                "IteratorStorage requires a char type iterator.");
+
+  // Constructs a default IteratorStorage with empty, default-constructed
+  // Iterators.
+  template <typename DummyIterator = Iterator,
+            typename = typename ::std::enable_if<
+                ::std::is_default_constructible<DummyIterator>::value>::type>
+  IteratorStorage() : begin_(), end_() {}
+
+  // Constructs from explicit begin and end iterators.
+  IteratorStorage(Iterator begin, Iterator end)
+      : begin_(::std::move(begin)), end_(::std::move(end)) {}
+
+  // Constructs from a container, delegating to the (begin, end) constructor.
+  template <typename Container,
+            typename = typename ::std::enable_if<::std::is_convertible<
+                decltype(::std::begin(::std::declval<Container&>())),
+                Iterator>::value>::type>
+  explicit IteratorStorage(Container&& container)
+      : IteratorStorage(::std::begin(container), ::std::end(container)) {}
+
+  // Allow implicit construction from any compatible IteratorStorage type,
+  // structurally enforcing convertibility via SFINAE.
+  template <typename OtherIterator,
+            typename = typename ::std::enable_if<
+                ::std::is_convertible<OtherIterator, Iterator>::value>::type>
+  IteratorStorage(const IteratorStorage<OtherIterator>& other)
+      : begin_(other.begin()), end_(other.end()) {}
+
+  // Assignment from a compatible IteratorStorage.
+  template <typename OtherIterator,
+            typename = typename ::std::enable_if<
+                ::std::is_convertible<OtherIterator, Iterator>::value>::type>
+  IteratorStorage& operator=(const IteratorStorage<OtherIterator>& other) {
+    begin_ = other.begin();
+    end_ = other.end();
+    return *this;
+  }
+
+  template <typename OtherIterator,
+            typename = typename ::std::enable_if<
+                ::std::is_convertible<OtherIterator, Iterator>::value>::type>
+  bool operator==(const IteratorStorage<OtherIterator>& other) const {
+    return begin_ == other.begin() && end_ == other.end();
+  }
+
+  template <typename OtherIterator,
+            typename = typename ::std::enable_if<
+                ::std::is_convertible<OtherIterator, Iterator>::value>::type>
+  bool operator!=(const IteratorStorage<OtherIterator>& other) const {
+    return !(*this == other);
+  }
+
+  // GetOffsetStorage returns a new IteratorStorage that points `offset` bytes
+  // into the current iterator.
+  //
+  // Alignment assertions are intentionally dropped since Iterators may wrap
+  // completely unaligned, scattered chunk pointers. The template parameters
+  // (kSubAlignment, kSubOffset) must be strictly maintained for compatibility
+  // with generated Emboss read/write recursive accessors.
+  template </**/ ::std::size_t kSubAlignment = 1, ::std::size_t kSubOffset = 0>
+  IteratorStorage<Iterator> GetOffsetStorage(::std::size_t offset,
+                                             ::std::size_t size) const {
+    ::std::size_t available = SizeInBytes();
+    ::std::size_t actual_size =
+        offset > available ? 0 : ::std::min(size, available - offset);
+    return IteratorStorage<Iterator>{begin_ + offset,
+                                     begin_ + offset + actual_size};
+  }
+
+  template <typename Dummy = ByteType, typename = typename ::std::enable_if<
+                                           ::std::is_const<Dummy>::value>::type>
+  Iterator cbegin() const {
+    return begin_;
+  }
+
+  template <typename Dummy = ByteType, typename = typename ::std::enable_if<
+                                           ::std::is_const<Dummy>::value>::type>
+  Iterator cend() const {
+    return end_;
+  }
+
+  template </**/ ::std::size_t kBits>
+  typename LeastWidthInteger<kBits>::Unsigned ReadLittleEndianUInt() const {
+    EMBOSS_CHECK_EQ(SizeInBytes() * 8, kBits);
+    return UncheckedReadLittleEndianUInt<kBits>();
+  }
+
+  template </**/ ::std::size_t kBits>
+  typename LeastWidthInteger<kBits>::Unsigned UncheckedReadLittleEndianUInt()
+      const {
+    static_assert(kBits % 8 == 0,
+                  "IteratorStorage::ReadLittleEndianUInt() can only read "
+                  "whole-byte values.");
+    return UnalignedAccessor<CharT, kBits>::ReadLittleEndianUInt(begin_);
+  }
+
+  template </**/ ::std::size_t kBits>
+  typename LeastWidthInteger<kBits>::Unsigned ReadBigEndianUInt() const {
+    EMBOSS_CHECK_EQ(SizeInBytes() * 8, kBits);
+    return UncheckedReadBigEndianUInt<kBits>();
+  }
+
+  template </**/ ::std::size_t kBits>
+  typename LeastWidthInteger<kBits>::Unsigned UncheckedReadBigEndianUInt()
+      const {
+    static_assert(kBits % 8 == 0,
+                  "IteratorStorage::ReadBigEndianUInt() can only read "
+                  "whole-byte values.");
+    return UnalignedAccessor<CharT, kBits>::ReadBigEndianUInt(begin_);
+  }
+
+  template </**/ ::std::size_t kBits>
+  void WriteLittleEndianUInt(
+      typename LeastWidthInteger<kBits>::Unsigned value) const {
+    EMBOSS_CHECK_EQ(SizeInBytes() * 8, kBits);
+    UncheckedWriteLittleEndianUInt<kBits>(value);
+  }
+
+  template </**/ ::std::size_t kBits>
+  void UncheckedWriteLittleEndianUInt(
+      typename LeastWidthInteger<kBits>::Unsigned value) const {
+    static_assert(kBits % 8 == 0,
+                  "IteratorStorage::WriteLittleEndianUInt() can only write "
+                  "whole-byte values.");
+    UnalignedAccessor<CharT, kBits>::WriteLittleEndianUInt(begin_, value);
+  }
+
+  template </**/ ::std::size_t kBits>
+  void WriteBigEndianUInt(
+      typename LeastWidthInteger<kBits>::Unsigned value) const {
+    EMBOSS_CHECK_EQ(SizeInBytes() * 8, kBits);
+    UncheckedWriteBigEndianUInt<kBits>(value);
+  }
+
+  template </**/ ::std::size_t kBits>
+  void UncheckedWriteBigEndianUInt(
+      typename LeastWidthInteger<kBits>::Unsigned value) const {
+    static_assert(kBits % 8 == 0,
+                  "IteratorStorage::WriteBigEndianUInt() can only write "
+                  "whole-byte values.");
+    UnalignedAccessor<CharT, kBits>::WriteBigEndianUInt(begin_, value);
+  }
+
+  template <typename OtherIterator,
+            typename = typename ::std::enable_if<
+                ::std::is_convertible<OtherIterator, Iterator>::value>::type>
+  void UncheckedCopyFrom(const IteratorStorage<OtherIterator>& other,
+                         ::std::size_t length) const {
+    ::std::copy_n(other.begin(), length, begin_);
+  }
+
+  template <typename OtherIterator,
+            typename = typename ::std::enable_if<
+                ::std::is_convertible<OtherIterator, Iterator>::value>::type>
+  void CopyFrom(const IteratorStorage<OtherIterator>& other,
+                ::std::size_t length) const {
+    EMBOSS_CHECK_LE(length, SizeInBytes());
+    EMBOSS_CHECK_LE(length, other.SizeInBytes());
+    UncheckedCopyFrom(other, length);
+  }
+
+  bool Ok() const { return true; }
+  ::std::size_t SizeInBytes() const {
+    return static_cast<::std::size_t>(end_ - begin_);
+  }
+  Iterator begin() const { return begin_; }
+  Iterator end() const { return end_; }
+
+ private:
+  Iterator begin_;
+  Iterator end_;
+};
+
+#if __cplusplus >= 201703L
+template <typename Container>
+IteratorStorage(Container&&)
+    -> IteratorStorage<decltype(::std::begin(::std::declval<Container&>()))>;
+#endif
+
 // LittleEndianByteOrderer is a pass-through adapter for a byte buffer class.
 // It is used to implement little-endian bit blocks.
 //
