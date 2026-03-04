@@ -248,6 +248,177 @@ TEST(UnalignedAccessor, IteratorReadsAndWrites) {
   TestIteratorUnalignedAccessor<unsigned char, 64>();
 }
 
+template <typename CharT>
+void TestIteratorStorage() {
+  using ByteT = typename std::remove_const<CharT>::type;
+
+  std::vector<std::vector<ByteT>> chunks = {
+      {ByteT(0x11), ByteT(0x22)},
+      {ByteT(0x33), ByteT(0x44), ByteT(0x55)},
+      {ByteT(0x66), ByteT(0x77), ByteT(0x88)}};
+
+  NoncontiguousContainer<ByteT> container(chunks);
+
+  IteratorStorage<typename NoncontiguousContainer<ByteT>::iterator> storage(
+      container.begin(), container.end());
+
+  EXPECT_EQ(storage.SizeInBytes(), 8U);
+
+  // Test full 64-bit Reads via UnalignedAccessor delegation
+  EXPECT_EQ(0x8877665544332211UL, storage.template ReadLittleEndianUInt<64>());
+  EXPECT_EQ(0x1122334455667788UL, storage.template ReadBigEndianUInt<64>());
+
+  // Test sub-storage offsets
+  auto substorage1 = storage.template GetOffsetStorage<1, 0>(2, 4);
+  EXPECT_EQ(substorage1.SizeInBytes(), 4U);
+  EXPECT_EQ(0x66554433UL, substorage1.template ReadLittleEndianUInt<32>());
+
+  auto substorage2 = storage.template GetOffsetStorage<1, 0>(
+      6, 4);  // Out of bounds truncates size
+  EXPECT_EQ(substorage2.SizeInBytes(), 2U);
+  EXPECT_EQ(0x8877UL, substorage2.template ReadLittleEndianUInt<16>());
+
+  // Test 32-bit Writes
+  auto write_storage = storage.template GetOffsetStorage<1, 0>(0, 4);
+  write_storage.template WriteLittleEndianUInt<32>(0x99AABBCCUL);
+
+  std::vector<ByteT> verify_le;
+  for (auto it = write_storage.begin(); it != write_storage.end(); ++it) {
+    verify_le.push_back(*it);
+  }
+  std::vector<ByteT> expected_le = {ByteT(0xCC), ByteT(0xBB), ByteT(0xAA),
+                                    ByteT(0x99)};
+  EXPECT_EQ(verify_le, expected_le);
+
+  write_storage.template WriteBigEndianUInt<32>(0x99AABBCCUL);
+  std::vector<ByteT> verify_be;
+  for (auto it = write_storage.begin(); it != write_storage.end(); ++it) {
+    verify_be.push_back(*it);
+  }
+  std::vector<ByteT> expected_be = {ByteT(0x99), ByteT(0xAA), ByteT(0xBB),
+                                    ByteT(0xCC)};
+  EXPECT_EQ(verify_be, expected_be);
+
+  // Test copy from
+  IteratorStorage<typename NoncontiguousContainer<ByteT>::iterator> copy_dest =
+      storage.template GetOffsetStorage<1, 0>(0, 4);
+  copy_dest.CopyFrom(write_storage, 4);
+  std::vector<ByteT> verify_copy;
+  for (auto it = copy_dest.begin(); it != copy_dest.end(); ++it) {
+    verify_copy.push_back(*it);
+  }
+  EXPECT_EQ(verify_copy, expected_be);
+}
+
+template <typename CharT>
+void TestIteratorBitBlock() {
+  using ByteT = typename std::remove_const<CharT>::type;
+
+  std::vector<std::vector<ByteT>> chunks = {
+      {ByteT(0x00), ByteT(0x00)},
+      {ByteT(0x00), ByteT(0x00), ByteT(0x00)},
+      {ByteT(0x00), ByteT(0x00), ByteT(0x00)}};
+  NoncontiguousContainer<ByteT> container(chunks);
+
+  IteratorStorage<typename NoncontiguousContainer<ByteT>::iterator> storage(
+      container.begin(), container.end());
+
+  LittleEndianByteOrderer<
+      IteratorStorage<typename NoncontiguousContainer<ByteT>::iterator>>
+      le_orderer(storage);
+  BitBlock<decltype(le_orderer), 64> le_block(le_orderer);
+
+  EXPECT_TRUE(le_block.Ok());
+  EXPECT_EQ(le_block.SizeInBits(), 64U);
+
+  le_block.WriteUInt(0xAABBCCDDEEFF1122UL);
+  EXPECT_EQ(0xAABBCCDDEEFF1122UL, le_block.ReadUInt());
+
+  std::vector<ByteT> expect_le = {ByteT(0x22), ByteT(0x11), ByteT(0xFF),
+                                  ByteT(0xEE), ByteT(0xDD), ByteT(0xCC),
+                                  ByteT(0xBB), ByteT(0xAA)};
+  std::vector<ByteT> verify_le;
+  for (auto it = storage.begin(); it != storage.end(); ++it) {
+    verify_le.push_back(*it);
+  }
+  EXPECT_EQ(expect_le, verify_le);
+
+  BigEndianByteOrderer<
+      IteratorStorage<typename NoncontiguousContainer<ByteT>::iterator>>
+      be_orderer(storage);
+  BitBlock<decltype(be_orderer), 64> be_block(be_orderer);
+
+  be_block.WriteUInt(0x1122334455667788UL);
+  EXPECT_EQ(0x1122334455667788UL, be_block.ReadUInt());
+
+  std::vector<ByteT> expect_be = {ByteT(0x11), ByteT(0x22), ByteT(0x33),
+                                  ByteT(0x44), ByteT(0x55), ByteT(0x66),
+                                  ByteT(0x77), ByteT(0x88)};
+  std::vector<ByteT> verify_be;
+  for (auto it = storage.begin(); it != storage.end(); ++it) {
+    verify_be.push_back(*it);
+  }
+  EXPECT_EQ(expect_be, verify_be);
+
+  // Test Sub-Offsets
+  auto le_subblock = le_block.template GetOffsetStorage<1, 0>(16, 32);
+  EXPECT_EQ(le_subblock.SizeInBits(), 32U);
+  EXPECT_EQ(0x66554433UL, le_subblock.ReadUInt());
+
+  auto be_subblock = be_block.template GetOffsetStorage<1, 0>(16, 32);
+  EXPECT_EQ(be_subblock.SizeInBits(), 32U);
+  EXPECT_EQ(0x33445566UL, be_subblock.ReadUInt());
+}
+
+template <typename CharT>
+void TestCbeginCend() {
+  using ByteT = typename std::remove_const<CharT>::type;
+  std::vector<std::vector<ByteT>> chunks = {{ByteT(0x77)}};
+  ::emboss::support::test::NoncontiguousContainer<ByteT> container(chunks);
+
+  ::emboss::support::IteratorStorage<decltype(container.cbegin())> storage(
+      container.cbegin(), container.cend());
+
+  // Confirm cbegin/cend are exposed and evaluatable for const character
+  // iterators:
+  auto cb = storage.cbegin();
+  auto ce = storage.cend();
+  EXPECT_TRUE(cb != ce);
+}
+
+TEST(IteratorStorage, CbeginCend) {
+  TestCbeginCend<char>();
+  TestCbeginCend<const char>();
+  TestCbeginCend<unsigned char>();
+  TestCbeginCend<const unsigned char>();
+#if __cplusplus >= 201703L
+  TestCbeginCend<std::byte>();
+  TestCbeginCend<const std::byte>();
+#endif
+}
+
+TEST(IteratorStorage, ReadWriteOffsetting) {
+  TestIteratorStorage<char>();
+  TestIteratorStorage<const char>();
+  TestIteratorStorage<unsigned char>();
+  TestIteratorStorage<const unsigned char>();
+#if __cplusplus >= 201703L
+  TestIteratorStorage<std::byte>();
+  TestIteratorStorage<const std::byte>();
+#endif
+}
+
+TEST(BitBlock, IteratorStorageIntegration) {
+  TestIteratorBitBlock<char>();
+  TestIteratorBitBlock<const char>();
+  TestIteratorBitBlock<unsigned char>();
+  TestIteratorBitBlock<const unsigned char>();
+#if __cplusplus >= 201703L
+  TestIteratorBitBlock<std::byte>();
+  TestIteratorBitBlock<const std::byte>();
+#endif
+}
+
 TEST(ContiguousBuffer, OffsetStorageType) {
   EXPECT_TRUE((::std::is_same<
                ContiguousBuffer<char, 2, 0>,
