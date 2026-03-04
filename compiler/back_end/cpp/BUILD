@@ -99,6 +99,22 @@ emboss_cc_test(
     ],
     deps = [
         "//testdata:alignments_emboss",
+        "//runtime/cpp/test/util:noncontiguous_container",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+emboss_cc_test(
+    name = "iterator_view_integration_test",
+    srcs = [
+        "testcode/iterator_view_integration_test.cc",
+    ],
+    deps = [
+        "//testdata:alignments_emboss",
+        "//testdata:condition_emboss",
+        "//testdata:dynamic_size_emboss",
+        "//testdata:uint_sizes_emboss",
+        "//runtime/cpp/test/util:noncontiguous_container",
         "@com_google_googletest//:gtest_main",
     ],
 )
