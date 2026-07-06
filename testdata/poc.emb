@@ -1,0 +1,22 @@
+[$default byte_order: "LittleEndian"]
+
+struct Simple:
+    0 [+1] UInt a
+    1 [+2] UInt b
+    if a == 42:
+        3 [+1] UInt c
+
+struct ComplexEdgeCases:
+    0 [+1] bits:
+        0 [+1] UInt bit_0
+        1 [+7] UInt bit_1_to_7
+    1 [+1] bits:
+        0 [+4] UInt nibble_0
+        4 [+4] UInt nibble_1
+    2 [+5] bits:
+        1 [+31] UInt spanning_31_bits
+        32 [+7] UInt another_field
+
+struct NormalizedStruct:
+    0 [+1] UInt a
+    1 [+2] UInt b

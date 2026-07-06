@@ -1,0 +1,9 @@
+[$default byte_order: "LittleEndian"]
+
+struct IsoDataFrameHeader:
+  -- HCI Iso Data Packet Header simplified for PoC
+  0  [+4]  bits:
+    0  [+12]      UInt           connection_handle
+    12 [+2]       UInt           pb_flag
+    14 [+1]       UInt           ts_flag
+    16 [+14]      UInt           data_total_length

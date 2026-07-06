@@ -1,0 +1,10 @@
+[package]
+name = "rust-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+emboss-runtime = { path = "../../runtime/rust" }
+
+[dev-dependencies]
+proptest = "1.0"

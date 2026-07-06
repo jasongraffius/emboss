@@ -41,9 +41,9 @@ def _parse_args(argv):
     parser.add_argument(
         "--generate",
         nargs=1,
-        choices=["cc"],
+        choices=["cc", "rust"],
         default="cc",
-        help="Which back end to use.  Currently only C++ is supported.",
+        help="Which back end to use.",
     )
     parser.add_argument(
         "--output-path",
@@ -75,6 +75,7 @@ def main(argv):
     from compiler.back_end.cpp import ( # pylint:disable=import-outside-toplevel
     emboss_codegen_cpp, header_generator
     )
+    from compiler.back_end.rust import codegen as rust_codegen
     from compiler.front_end import ( # pylint:disable=import-outside-toplevel
     emboss_front_end
     )
@@ -86,10 +87,19 @@ def main(argv):
     if errors:
         return 1
 
-    config = header_generator.Config(include_enum_traits=flags.cc_enum_traits)
-    header, errors = emboss_codegen_cpp.generate_headers_and_log_errors(
-        ir, flags.color_output, config
-    )
+    generate_target = flags.generate[0] if isinstance(flags.generate, list) else flags.generate
+    if generate_target == "cc":
+        config = header_generator.Config(include_enum_traits=flags.cc_enum_traits)
+        header, errors = emboss_codegen_cpp.generate_headers_and_log_errors(
+            ir, flags.color_output, config
+        )
+        output_suffix = ".h"
+    elif generate_target == "rust":
+        header = rust_codegen.generate_rust(ir)
+        errors = []
+        output_suffix = ".rs"
+    else:
+        errors = [f"Unknown generate target {generate_target}"]
 
     if errors:
         return 1
@@ -97,7 +107,7 @@ def main(argv):
     if flags.output_file:
         output_file = flags.output_file[0]
     else:
-        output_file = flags.input_file[0] + ".h"
+        output_file = flags.input_file[0] + output_suffix
 
     output_filepath = os.path.join(flags.output_path[0], output_file)
     os.makedirs(os.path.dirname(output_filepath), exist_ok=True)
